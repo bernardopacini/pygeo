@@ -501,6 +501,12 @@ class OM_DVGEOCOMP(om.ExplicitComponent):
         if not isComposite:
             self.add_input(desmptr_name, distributed=False, shape=val.shape, val=val)
 
+    def nom_addFFDDV(self, dvName, value, func, childName=None, isComposite=False, DVGeoName=None):
+        # if we have multiple DVGeos use the one specified by name
+        DVGeo = self.nom_getDVGeo(DVGeoName=DVGeoName)
+        self.add_input(dvName, distributed=False, shape=len(np.atleast_1d(value)))
+        DVGeo.addFFDDV(dvName=dvName, func=func, value=value)
+
     def nom_addRefAxis(self, childName=None, DVGeoName=None, **kwargs):
         # if we have multiple DVGeos use the one specified by name
         DVGeo = self.nom_getDVGeo(DVGeoName=DVGeoName)

@@ -53,6 +53,38 @@ class geoDVGlobal(geoDV):
             else:
                 return self.function(np.real(self.value), geo)
 
+class geoDVFFD(geoDV):
+    def __init__(self, name, value, lower, upper, scale, function, config):
+        """
+        Create a geometric design variable (or design variable group)
+        See addGlobalDV in DVGeometry class for more information
+        """
+        value = np.atleast_1d(np.array(value)).astype("D")
+        super().__init__(
+            name=name,
+            value=value,
+            nVal=len(value),
+            lower=lower,
+            upper=upper,
+            scale=scale,
+        )
+
+        self.config = config
+        self.function = function
+
+    def __call__(self, coef):
+        """When the object is called, actually apply the function"""
+        # Run the user-supplied function
+        d = np.dtype(complex)
+
+        # if self.config is None or config is None or any(c0 == config for c0 in self.config):
+        #     # If the geo object is complex, which is indicated by .coef
+        #     # being complex, run with complex numbers. Otherwise, convert
+        #     # to real before calling. This eliminates casting warnings.
+        if coef.dtype == d:
+            return self.function(self.value, coef)
+        else:
+            return self.function(np.real(self.value), coef)
 
 class geoDVLocal(geoDV):
     def __init__(self, name, lower, upper, scale, axis, coefListIn, mask, config):

@@ -16,7 +16,7 @@ from scipy.spatial import cKDTree
 # Local modules
 from .. import geo_utils, pyBlock, pyNetwork
 from .BaseDVGeo import BaseDVGeometry
-from .designVars import geoDVComposite, geoDVGlobal, geoDVLocal, geoDVSectionLocal, geoDVShapeFunc, geoDVSpanwiseLocal
+from .designVars import geoDVComposite, geoDVGlobal, geoDVLocal, geoDVSectionLocal, geoDVShapeFunc, geoDVSpanwiseLocal, geoDVFFD
 
 
 class DVGeometry(BaseDVGeometry):
@@ -134,6 +134,7 @@ class DVGeometry(BaseDVGeometry):
         self.DV_listSectionLocal = OrderedDict()  # Local Normal Design Variable List
         self.DV_listSpanwiseLocal = OrderedDict()  # Local Spanwise Design Variable List
         self.DVComposite = None  # Composite Design Variable
+        self.DV_listFFD = OrderedDict()  # FFD Variable List
 
         # FIXME: for backwards compatibility we still allow the argument complex=True/False
         # which we now check in kwargs and overwrite
@@ -959,6 +960,15 @@ class DVGeometry(BaseDVGeometry):
         if isinstance(config, str):
             config = [config]
         self.DV_listGlobal[dvName] = geoDVGlobal(dvName, value, lower, upper, scale, func, config)
+
+    def addFFDDV(self, dvName, value, func, lower=None, upper=None, scale=1.0, config=None, prependName=True):
+        # if the parent DVGeometry object has a name attribute, prepend it
+        # if self.name is not None and prependName:
+        #     dvName = self.name + "_" + dvName
+
+        if isinstance(config, str):
+            config = [config]
+        self.DV_listFFD[dvName] = geoDVFFD(dvName, value, lower, upper, scale, func, config)
 
     def addLocalDV(
         self,
@@ -1799,6 +1809,11 @@ class DVGeometry(BaseDVGeometry):
                 _checkArrLength(key, len(vals_to_set), self.DV_listSpanwiseLocal[key].nVal)
                 self.DV_listSpanwiseLocal[key].value = vals_to_set
 
+            if key in self.DV_listFFD:
+                vals_to_set = np.atleast_1d(dvDict[key]).astype("D")
+                _checkArrLength(key, len(vals_to_set), self.DV_listFFD[key].nVal)
+                self.DV_listFFD[key].value = vals_to_set
+
             # Jacobians are, in general, no longer up to date
             self.zeroJacobians(self.ptSetNames)
 
@@ -2123,6 +2138,11 @@ class DVGeometry(BaseDVGeometry):
         for key in self.DV_listLocal:
             self.DV_listLocal[key](self.FFD.coef, config)
 
+        # Now add in the FFD DVs
+        for key in self.DV_listFFD:
+            self.FFD.coef = np.copy(self.origFFDCoef)
+            self.DV_listFFD[key](self.FFD.coef)
+
         # Update all coef
         self.FFD._updateVolumeCoef()
 
@@ -2278,6 +2298,15 @@ class DVGeometry(BaseDVGeometry):
         i = DVCountLocal
         for key in self.DV_listLocal:
             dv = self.DV_listLocal[key]
+            if out1D:
+                dIdxDict[dv.name] = np.ravel(dIdx[:, i : i + dv.nVal])
+            else:
+                dIdxDict[dv.name] = dIdx[:, i : i + dv.nVal]
+
+            i += dv.nVal
+
+        for key in self.DV_listFFD:
+            dv = self.DV_listFFD[key]
             if out1D:
                 dIdxDict[dv.name] = np.ravel(dIdx[:, i : i + dv.nVal])
             else:
@@ -2657,6 +2686,8 @@ class DVGeometry(BaseDVGeometry):
         # this is the jacobian from accumulated derivative dependence from parent to child
         J_casc = self._cascadedDVJacobian(config=config)
 
+        J_FFD = self._FFDDVJacobian(config=config)
+
         dCoefdDV = None
 
         # add them together
@@ -2686,6 +2717,12 @@ class DVGeometry(BaseDVGeometry):
                 dCoefdDV = sparse.lil_matrix(J_casc)
             else:
                 dCoefdDV += J_casc
+
+        if J_FFD is not None:
+            if dCoefdDV is None:
+                dCoefdDV = sparse.lil_matrix(J_FFD)
+            else:
+                dCoefdDV += J_FFD
 
         self.dCoefdDV = dCoefdDV
         self.dCoefdDVUpdated = True
@@ -3574,7 +3611,7 @@ class DVGeometry(BaseDVGeometry):
         """Return the actual number of design variables, global + local
         + section local + spanwise local
         """
-        return self._getNDVGlobal() + self._getNDVLocal() + self._getNDVSectionLocal() + self._getNDVSpanwiseLocal()
+        return self._getNDVGlobal() + self._getNDVLocal() + self._getNDVSectionLocal() + self._getNDVSpanwiseLocal() + self._getNDVFFD()
 
     def getNDV(self):
         """
@@ -3636,6 +3673,20 @@ class DVGeometry(BaseDVGeometry):
 
         for child in self.children.values():
             nDV += child._getNDVSpanwiseLocal()
+
+        return nDV
+    
+    def _getNDVFFD(self):
+        nDV = 0
+        for key in self.DV_listFFD:
+            nDV += self.DV_listFFD[key].nVal
+
+        return nDV
+    
+    def _getNDVFFDSelf(self):
+        nDV = 0
+        for key in self.DV_listFFD:
+            nDV += self.DV_listFFD[key].nVal
 
         return nDV
 
@@ -4414,6 +4465,47 @@ class DVGeometry(BaseDVGeometry):
             # end for
         else:
             Jacobian = None
+
+        return Jacobian
+    
+    def _FFDDVJacobian(self, config=None):
+        """
+        Return the derivative of the coefficients wrt the local and shape function
+        design variables
+        """
+        # This is relatively straight forward, since the matrix is entirely one's or zeros for local DVs,
+        # and the sparsity pattern is explicitly provided for the shape function dvs with the definition of the shapes.
+        nDV = self._getNDVFFDSelf()
+
+        if nDV != 0:
+            Jacobian = sparse.lil_matrix((self.nPtAttachFull * 3, self.nDV_T))
+
+            h = 1.0e-40j
+            oneoverh = 1.0 / 1e-40
+
+            refFFDCoef = copy.copy(self.FFD.coef)
+            # refCoef = copy.copy(self.coef)
+
+            for key in self.DV_listFFD:
+                for iDV in range(nDV):
+                    refVal = self.DV_listFFD[key].value[iDV]
+
+                    self.DV_listFFD[key].value[iDV] += h
+                    # print(self.DV_listFFD[key].value)
+                    self.FFD.coef = refFFDCoef.astype("D")  # ffd coefficients
+                    # self.coef = refCoef.astype("D")
+                    # self._complexifyCoef()  # Make sure coefficients are complex
+
+                    self.DV_listFFD[key](self.FFD.coef)
+
+                    deriv = oneoverh * np.imag(self.FFD.coef)
+
+                    # self._unComplexifyCoef()
+                    self.FFD.coef = self.FFD.coef.real.astype("d")
+
+                    Jacobian[:, iDV] = deriv.flatten()
+
+                    self.DV_listFFD[key].value[iDV] = refVal
 
         return Jacobian
 
