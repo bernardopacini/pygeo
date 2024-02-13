@@ -4480,32 +4480,30 @@ class DVGeometry(BaseDVGeometry):
         if nDV != 0:
             Jacobian = sparse.lil_matrix((self.nPtAttachFull * 3, self.nDV_T))
 
-            h = 1.0e-40j
-            oneoverh = 1.0 / 1e-40
+            h = 1.0e-200j
+            oneoverh = 1.0 / 1e-200
 
+            refOrigFFDCoef = copy.copy(self.origFFDCoef)
             refFFDCoef = copy.copy(self.FFD.coef)
-            # refCoef = copy.copy(self.coef)
 
             for key in self.DV_listFFD:
                 for iDV in range(nDV):
                     refVal = self.DV_listFFD[key].value[iDV]
 
                     self.DV_listFFD[key].value[iDV] += h
-                    # print(self.DV_listFFD[key].value)
-                    self.FFD.coef = refFFDCoef.astype("D")  # ffd coefficients
-                    # self.coef = refCoef.astype("D")
-                    # self._complexifyCoef()  # Make sure coefficients are complex
+                    self.FFD.coef = refOrigFFDCoef.astype("D")  # ffd coefficients
 
                     self.DV_listFFD[key](self.FFD.coef)
 
                     deriv = oneoverh * np.imag(self.FFD.coef)
 
-                    # self._unComplexifyCoef()
-                    self.FFD.coef = self.FFD.coef.real.astype("d")
-
                     Jacobian[:, iDV] = deriv.flatten()
 
                     self.DV_listFFD[key].value[iDV] = refVal
+
+                    self.FFD.coef = self.FFD.coef.real.astype("d")
+        else:
+            Jacobian = None
 
         return Jacobian
 
